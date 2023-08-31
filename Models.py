@@ -1,11 +1,18 @@
 from pydantic import BaseModel
 from secrets import user_id
 
-base_url = "https://642a-202-148-59-230.ngrok.io"
+MY_BASE_URL = "https://3fc5-202-148-59-71.ngrok.io"
 
 
 class EventSubscriptionModel(BaseModel):
     changeType: str = "created,deleted"
-    notificationUrl: str = f"{base_url}/handle-new-events"
+    notificationUrl: str = f"{MY_BASE_URL}/handle/new-events"
     resource: str = f"users/{user_id}/calendar/events"
+    expirationDateTime: str = ""
+
+
+class TranscriptSubscriptionModel(BaseModel):
+    changeType: str = "created"
+    notificationUrl: str = f"{MY_BASE_URL}/handle/new-transcripts"
+    resource: str = "communications/onlineMeetings/<onlineMeetingId>/transcripts"
     expirationDateTime: str = ""
