@@ -3,40 +3,28 @@ import requests
 import datetime
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import PlainTextResponse
+from pymongo import MongoClient
 
-from secrets import client_id, client_secret, user_id, tenant_id
+from secrets import USER_ID, MONGO_DB_URL, DB_NAME
 from Models import EventSubscriptionModel, TranscriptSubscriptionModel
+from security.Authorization import Authorization
 
 app = FastAPI()
 
-access_token = "eyJ0eXAiOiJKV1QiLCJub25jZSI6IlhtaTA3Wk9WeVktR2lzMUVfcm1hUjBZTDd4aXg4ZkZQWFJ6WDcwd0MtNDQiLCJhbGciOiJSUzI1NiIsIng1dCI6Ii1LSTNROW5OUjdiUm9meG1lWm9YcWJIWkdldyIsImtpZCI6Ii1LSTNROW5OUjdiUm9meG1lWm9YcWJIWkdldyJ9.eyJhdWQiOiJodHRwczovL2dyYXBoLm1pY3Jvc29mdC5jb20iLCJpc3MiOiJodHRwczovL3N0cy53aW5kb3dzLm5ldC81NWMzMDFjNi02ZDBmLTQwY2EtOTU5NS0zODYxZWYzNzg1YWUvIiwiaWF0IjoxNjkzMzE3MzM1LCJuYmYiOjE2OTMzMTczMzUsImV4cCI6MTY5MzMyMTIzNSwiYWlvIjoiRTJGZ1lQQmxFZUhRbURDVjJmU3daTC9qOXRXK0FBPT0iLCJhcHBfZGlzcGxheW5hbWUiOiJvdXRsb29rQm90QXBpcyIsImFwcGlkIjoiNGQyOTRhNzgtNmE5Yi00N2EyLWE4MDgtNzg2ZWZhNTBiOGUzIiwiYXBwaWRhY3IiOiIxIiwiaWRwIjoiaHR0cHM6Ly9zdHMud2luZG93cy5uZXQvNTVjMzAxYzYtNmQwZi00MGNhLTk1OTUtMzg2MWVmMzc4NWFlLyIsImlkdHlwIjoiYXBwIiwib2lkIjoiZGM4ODc0OTQtNDE1ZC00NDA2LTk3NWQtZjVhMjI2ZjAwN2U5IiwicmgiOiIwLkFVb0F4Z0hEVlE5dHlrQ1ZsVGhoN3plRnJnTUFBQUFBQUFBQXdBQUFBQUFBQUFDSkFBQS4iLCJyb2xlcyI6WyJPbmxpbmVNZWV0aW5ncy5SZWFkLkFsbCIsIk1haWwuUmVhZFdyaXRlIiwiQ2FsZW5kYXJzLlJlYWQiLCJNYWlsLlJlYWRCYXNpYy5BbGwiLCJVc2VyLlJlYWQuQWxsIiwiT25saW5lTWVldGluZ1RyYW5zY3JpcHQuUmVhZC5BbGwiLCJDYWxlbmRhcnMuUmVhZEJhc2ljLkFsbCIsIk1haWwuUmVhZCIsIk1haWwuU2VuZCIsIk1haWwuUmVhZEJhc2ljIl0sInN1YiI6ImRjODg3NDk0LTQxNWQtNDQwNi05NzVkLWY1YTIyNmYwMDdlOSIsInRlbmFudF9yZWdpb25fc2NvcGUiOiJBUyIsInRpZCI6IjU1YzMwMWM2LTZkMGYtNDBjYS05NTk1LTM4NjFlZjM3ODVhZSIsInV0aSI6InUtcjNURHF0WEVXckIzVlFWSkNkQUEiLCJ2ZXIiOiIxLjAiLCJ3aWRzIjpbIjA5OTdhMWQwLTBkMWQtNGFjYi1iNDA4LWQ1Y2E3MzEyMWU5MCJdLCJ4bXNfdGNkdCI6MTY4OTMyOTUxMH0.Nvw3fkAyCamIRyeEQufWzHn5R-XQyPpS3QWZT_33E1f_XZQPZRGIMWgA_bIaIquhxxCnS9EKtRBGL5NHHrtCRLxKhJnJJ4Tbw4B6Yqw9OPCPWF0TENSerLP_0VKGL6VF_htXnK9ytddKw56ZKkzXm5zZTdmw0e28_q1WEWYyTw1RfIpbKQBJMN4v-HSpJFszLBk9Mz5WBC_CH8GfpYkJGKDfZWtPz9e3ww3VvPrkWGmIvhZaiT7xebugVG86hMYCv82_tgtTT4cFbO3k8Gm8f37l_zemZ3QRMV9K-TRHG-srVtQnz7lQ47aXA_aayE0wvTElvjbVwTAdboM2Uuk_5Q"
+
+@app.on_event("startup")
+def startup_mongo_client():
+    app.mongodb_client = MongoClient(MONGO_DB_URL)
+    db = app.mongodb_client[DB_NAME]
+
+
+@app.on_event("shutdown")
+def shutdown_db_client():
+    app.mongodb_client.close()
 
 
 GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 GRAPH_BETA_BASE_URL = "https://graph.microsoft.com/beta"
-
-headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-
-
-def get_token(force_refresh_token: bool):
-    global access_token
-    if not force_refresh_token and access_token:
-        return access_token
-    print("fetching new token")
-    token_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-    token_data = {
-        "grant_type": "client_credentials",
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "scope": "https://graph.microsoft.com/.default"
-    }
-    token_response = requests.post(token_url, data=token_data)
-    access_token = token_response.json()["access_token"]
-    headers['Authorization'] = f"Bearer {access_token}"
-    return access_token
 
 
 def create_new_event_subscription():
@@ -52,7 +40,7 @@ def create_new_event_subscription():
 
     print("sending")
     print(subscription_model.model_dump())
-    response = requests.post(subscription_url, json=subscription_model.model_dump(), headers=headers)
+    response = requests.post(subscription_url, json=subscription_model.model_dump(), headers=Authorization.getHeaders())
 
     if response.status_code == 201:
         subscription_info = response.json()
@@ -81,7 +69,7 @@ def create_new_transcript_subscription(meeting_id: str):
 
     print("sending")
     print(subscription_model.model_dump())
-    response = requests.post(subscription_url, json=subscription_model.model_dump(), headers=headers)
+    response = requests.post(subscription_url, json=subscription_model.model_dump(), headers=Authorization.getHeaders())
 
     if response.status_code == 201:
         subscription_info = response.json()
@@ -97,9 +85,9 @@ def create_new_transcript_subscription(meeting_id: str):
 def get_meeting_id_using_event_id(event_url: str):
     meeting_id: str = ""
     event_url = f"{GRAPH_BASE_URL}/{event_url}"
-    meeting_url = f"{GRAPH_BASE_URL}/users/{user_id}/onlineMeetings"
+    meeting_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/onlineMeetings"
     # print("calling",event_url)
-    event_response = requests.get(event_url, headers=headers) # check 200 status before processing
+    event_response = requests.get(event_url, headers=Authorization.getHeaders()) # check 200 status before processing
     if event_response.status_code == 200:
         event = event_response.json()
         join_web_url: str = event["onlineMeeting"]["joinUrl"]
@@ -109,7 +97,7 @@ def get_meeting_id_using_event_id(event_url: str):
             "$filter": f"JoinWebUrl eq '{join_web_url}'"
         }
         print("calling", meeting_url)
-        meeting_response = requests.get(meeting_url, params=params, headers=headers)
+        meeting_response = requests.get(meeting_url, params=params, headers=Authorization.getHeaders())
         if meeting_response.status_code == 200:
             meeting = meeting_response.json()
             meeting_id = meeting["value"][0]["id"]
@@ -137,17 +125,6 @@ def handel_new_events_notification(data: dict):
 @app.get("/")
 def hello():
     return {"message": "hello world from get endpoint"}
-
-
-@app.post("/")
-def hello():
-    return {"message": "hello world from post endpoint"}
-
-
-@app.get("/token")
-def get_route(force_refresh_token: bool = False):
-    get_token(force_refresh_token)
-    return {"message": access_token}
 
 
 # helper route
