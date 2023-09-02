@@ -48,10 +48,10 @@ class Authorization:
             # Check if the token has expired or about to expired
             if delta < 15*60:
                 print("Token has expired or is about to expire")
-                return False
+                return True
             else:
                 # print("Token is valid")
-                return True
+                return False
         except jwt.DecodeError as ex:
             print("Invalid token", ex)
 
