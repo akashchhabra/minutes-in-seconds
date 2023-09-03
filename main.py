@@ -33,7 +33,6 @@ GRAPH_BETA_BASE_URL = "https://graph.microsoft.com/beta"
 
 def save_event_subscription_to_db(subscription: SubscriptionSuccessModel):
     update_result = app.db["subscriptions"].insert_one(jsonable_encoder(subscription))
-    print("update_result", update_result.acknowledged)
     if update_result.acknowledged:
         logging.info("Event subscription saved to database")
     else:
@@ -70,11 +69,8 @@ def create_new_event_subscription():
         subscription_info = response.json()
         logging.info("Event subscription created successfully.")
         save_event_subscription_to_db(SubscriptionSuccessModel(**subscription_info))
-        return True
     else:
-        print("Error creating subscription")
-        print(response.text)
-        return False
+        logging.info(f"Error creating subscription\n{response.text}")
 
 
 def create_new_transcript_subscription(meeting_id: str):
@@ -135,40 +131,45 @@ def get_meeting_id_using_event_id(event_id: str):
     return meeting.meetingId
 
 
-def replyall_summary_to_meeting_invite(meeting_id, summary, action_points):
-    print("fetching meeting from db")
-    meeting = MeetingModel(**app.db["meetings"].find_one(
-        {"meetingId": meeting_id}
-    ))
-    print("meeting from db",meeting.eventId)
-    replyall_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/messages/{event_id}/replyAll"
+def reply_all_summary_to_meeting_invite(meeting_id, summary, action_points):
     reply_content = f"""
-    Hi Team,
-    
-    Here are minutes of the meeting\n
-    {summary}\n\n
-    Here are some action points\n
-    {action_points}\n
-    Regards,
-    MinutesInSeconds
-    """
+        Hi Team,
+
+        Here are minutes of the meeting\n
+        {summary}\n\n
+        Here are some action points\n
+        {action_points}\n
+        Regards,
+        MinutesInSeconds
+        """
     reply_data = {
-            "message": {
-                "body": {
-                    "contentType": "text",
-                    "content": reply_content
-                }
+        "message": {
+            "body": {
+                "contentType": "text",
+                "content": reply_content
             }
         }
-    response = requests.post(replyall_url, headers=Authorization.getHeaders(), json=reply_data)
-    print("response.status_code",response.status_code)
-    if response.status_code == 202:
-        logging.info("Transcript summary and action points sent successful")
+    }
+    message_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/messages"
+    params = {
+        "$expand": f"microsoft.graph.eventMessage/event($select = id;$filter = id eq '{meeting_id}')"
+    }
+    response = requests.get(message_url, headers=Authorization.getHeaders(), params=params, timeout=10)
+    if response.status_code == 200:
+        message_id = response.json()["value"][0]["id"]
+        reply_all_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/messages/{message_id}/replyAll"
+        response = requests.post(reply_all_url, headers=Authorization.getHeaders(), json=reply_data, timeout=10)
+        if response.status_code == 202:
+            logging.info("Transcript summary and action points sent successful")
+        else:
+            logging.error(f"Error in sending summary in mail, maybe this resource dont allow replyAll\n{response.text}")
     else:
-        logging.error(f"Error in sending summary in mail\n{response.text}")
+        logging.error("Error fetching message id")
+
 
 def summarize_transcript(transcripts_vtt: str):
     return transcripts_vtt, "action points"
+
 
 def get_transcripts(meeting_id, transcript_id):
     transcripts_vtt = ""
@@ -180,10 +181,11 @@ def get_transcripts(meeting_id, transcript_id):
     if transcript_response.status_code == 200:
         logging.info("Transcripts fetched successfully")
         transcripts_vtt = str(transcript_response.text)
-        print(f"vtt\n{transcripts_vtt}")
+        # print(f"vtt\n{transcripts_vtt}")
     else:
         logging.error(f"Error in fetching transcript\n{transcript_response.text}")
     return transcripts_vtt
+
 
 def handel_new_transcript_notification(notification: dict):
     transcript_resource_url = notification["value"][0]["resource"]
@@ -198,13 +200,13 @@ def handel_new_transcript_notification(notification: dict):
 
     summary, action_points = summarize_transcript(transcripts_vtt)
 
-    replyall_summary_to_meeting_invite(meeting_id, summary, action_points)
+    reply_all_summary_to_meeting_invite(meeting_id, summary, action_points)
 
 
 def handel_new_events_notification(notification: dict):
     # fetching event dict from notification
     event = notification["value"][0]
-    print("event_id", event["resourceData"]["id"])
+    # print("event_id", event["resourceData"]["id"])
     change_type = event["changeType"]
     if change_type == "created":
         meeting_id = get_meeting_id_using_event_id(event["resourceData"]["id"])
@@ -227,10 +229,8 @@ def getToken():
 # helper route
 @app.post("/create-new-event-subscription")
 def event_subscription():
-    if create_new_event_subscription():
-        return {"message": "success"}
-    else:
-        return {"message": "error occured"}
+    create_new_event_subscription()
+    return {"message": "done"}
 
 
 # helper route
@@ -244,7 +244,7 @@ def transcript_subscription(meeting_id: str):
 def handel_new_events(validationToken: str = None, notification: dict = None, background_task: BackgroundTasks = None):
     # Validating subscription creation
     if validationToken:
-        print("validation_token: " + validationToken)
+        logging.info("validation_token: " + validationToken)
         return validationToken
 
     logging.info("New event notification received...")
@@ -256,7 +256,7 @@ def handel_new_events(validationToken: str = None, notification: dict = None, ba
 def handle_new_transcripts(validationToken: str = None, notification: dict = None, background_task: BackgroundTasks = None):
     # Validating subscription creation
     if validationToken:
-        print("validation_token: " + validationToken)
+        logging.info("validation_token: " + validationToken)
         return validationToken
 
     logging.info("New transcript notification received...")
