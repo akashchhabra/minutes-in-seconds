@@ -3,13 +3,14 @@ import requests
 import logging
 import re
 
+import openai
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.responses import PlainTextResponse
 from fastapi.encoders import jsonable_encoder
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 
-from secrets import USER_ID, MONGO_DB_URL, DB_NAME
+from secrets import USER_ID, MONGO_DB_URL, DB_NAME, OPENAI_API_KEY, OPENAI_ORG
 from Models import EventSubscriptionModel, TranscriptSubscriptionModel, MeetingModel, MeetingTimeModel, SubscriptionSuccessModel
 from security.Authorization import Authorization
 
@@ -18,9 +19,14 @@ logging.basicConfig(level=logging.INFO)
 
 @app.on_event("startup")
 def startup_mongo_client():
+    # mongodb connection config
     app.mongodb_client = MongoClient(MONGO_DB_URL, server_api = ServerApi('1'))
+    app.mongodb_client.admin.command("ping")
     logging.info("connected to mongoDB!!!")
     app.db = app.mongodb_client[DB_NAME]
+    # OpenAI config
+    openai.organization = OPENAI_ORG
+    openai.api_key = OPENAI_API_KEY
 
 @app.on_event("shutdown")
 def shutdown_db_client():
@@ -45,7 +51,7 @@ def save_transcription_subscription_to_db(meeting_id: str, subscription: Subscri
         {"$set": {"transcriptSubscription": jsonable_encoder(subscription)}}
     )
     if update_result.modified_count == 1:
-        logging.info("Transcript details saved to database.")
+        logging.info("Transcript subscription details saved to database")
     else:
         logging.error(f"Error: cannot saving transcript subscriptions details to database\n{update_result}")
 
@@ -94,7 +100,7 @@ def create_new_transcript_subscription(meeting_id: str):
 
     if response.status_code == 201:
         subscription_info = response.json()
-        logging.info("Transcript subscription created successfully.")
+        logging.info("Transcript subscription created successfully")
         save_transcription_subscription_to_db(meeting_id, SubscriptionSuccessModel(**subscription_info))
     else:
         logging.error(f"Error in creating transcript subscription\n{response.text}")
@@ -131,14 +137,14 @@ def get_meeting_id_using_event_id(event_id: str):
     return meeting.meetingId
 
 
-def reply_all_summary_to_meeting_invite(meeting_id, summary, action_points):
+def reply_all_summary_to_meeting_invite(meeting_id, minutes, action_points):
     reply_content = f"""
         Hi Team,
 
         Here are minutes of the meeting\n
-        {summary}\n\n
+        {minutes}\n\n
         Here are some action points\n
-        {action_points}\n
+        {action_points}\n\n
         Regards,
         MinutesInSeconds
         """
@@ -160,15 +166,54 @@ def reply_all_summary_to_meeting_invite(meeting_id, summary, action_points):
         reply_all_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/messages/{message_id}/replyAll"
         response = requests.post(reply_all_url, headers=Authorization.getHeaders(), json=reply_data, timeout=10)
         if response.status_code == 202:
-            logging.info("Transcript summary and action points sent successful")
+            logging.info("ReplyAll Successful: Meeting minutes and action points sent to event invite")
         else:
             logging.error(f"Error in sending summary in mail, maybe this resource dont allow replyAll\n{response.text}")
     else:
         logging.error("Error fetching message id")
 
 
+def clean_transcript_text(transcripts_vtt: str):
+    cleaned_lines = []
+    for line in transcripts_vtt.split("\n"):
+        if line != "" and "-->" not in line:
+            cleaned_lines.append(
+                line.lstrip("<v ")
+                .rstrip("</v>")
+                .replace("(Guest)", "")
+            )
+
+    return "\n".join(cleaned_lines[1:])
+
+
 def summarize_transcript(transcripts_vtt: str):
-    return transcripts_vtt, "action points"
+    cleaned_transcript = clean_transcript_text(transcripts_vtt)
+
+    logging.info("hang tight, chatGPT is here...")
+
+    minutes_prompt = f"""write a short summary from the following meeting transcript,
+    keep the summary concise and informative ignore Introduction, Greetings and goodbyes
+    do not list basic details like Date, Time, Attendees etc
+    {cleaned_transcript}
+    """
+    action_prompt = f"""extract action points from the following meeting transcript
+    keep it concise, one or max two points per person
+    {cleaned_transcript}"""
+
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": minutes_prompt}]
+    )
+    minutes = response["choices"][0]["message"]["content"]
+    logging.info("Minutes generated using chatGPT")
+
+    response = openai.ChatCompletion.create(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": action_prompt}]
+    )
+    action_points = response["choices"][0]["message"]["content"]
+    logging.info("Action points generated using chatGPT")
+    return minutes, action_points
 
 
 def get_transcripts(meeting_id, transcript_id):
@@ -189,7 +234,6 @@ def get_transcripts(meeting_id, transcript_id):
 
 def handel_new_transcript_notification(notification: dict):
     transcript_resource_url = notification["value"][0]["resource"]
-    logging.info(f"received transcript_resource_url {transcript_resource_url}")
     regex = "\(.*?\)"
     ids: list[str] = re.findall(regex, transcript_resource_url)
     meeting_id, transcript_id = [id.lstrip("('").rstrip("')") for id in ids]
@@ -198,9 +242,9 @@ def handel_new_transcript_notification(notification: dict):
 
     transcripts_vtt = get_transcripts(meeting_id, transcript_id)
 
-    summary, action_points = summarize_transcript(transcripts_vtt)
+    minutes, action_points = summarize_transcript(transcripts_vtt)
 
-    reply_all_summary_to_meeting_invite(meeting_id, summary, action_points)
+    reply_all_summary_to_meeting_invite(meeting_id, minutes, action_points)
 
 
 def handel_new_events_notification(notification: dict):
@@ -223,9 +267,12 @@ def hello():
 def hello():
     return {"id": "notification"}
 
+
 @app.get("/token")
 def getToken():
     return Authorization.getHeaders()
+
+
 # helper route
 @app.post("/create-new-event-subscription")
 def event_subscription():
