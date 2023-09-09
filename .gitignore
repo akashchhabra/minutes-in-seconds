@@ -1,3 +1,4 @@
 ngrok.exe
-secrets.py
+Minutes/.env
 .idea/
+*.log

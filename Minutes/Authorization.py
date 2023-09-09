@@ -1,7 +1,7 @@
 import time
 import requests
 import jwt
-from secrets import TENANT_ID, CLIENT_ID, CLIENT_SECRET
+from Minutes import config
 
 
 class Authorization:
@@ -20,11 +20,11 @@ class Authorization:
     @staticmethod
     def updateToken():
         print("fetching new token")
-        token_url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+        token_url = f"https://login.microsoftonline.com/{config.get('TENANT_ID')}/oauth2/v2.0/token"
         token_data = {
             "grant_type": "client_credentials",
-            "CLIENT_ID": CLIENT_ID,
-            "CLIENT_SECRET": CLIENT_SECRET,
+            "CLIENT_ID": config["CLIENT_ID"],
+            "CLIENT_SECRET": config["CLIENT_SECRET"],
             "scope": "https://graph.microsoft.com/.default"
         }
         try:

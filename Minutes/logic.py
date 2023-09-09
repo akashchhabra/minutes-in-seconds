@@ -1,44 +1,24 @@
+import logging
 import datetime
 import requests
-import logging
 import re
-
 import openai
-from fastapi import FastAPI, BackgroundTasks
-from fastapi.responses import PlainTextResponse
+
 from fastapi.encoders import jsonable_encoder
-from pymongo import MongoClient
-from pymongo.server_api import ServerApi
 
-from secrets import USER_ID, MONGO_DB_URL, DB_NAME, OPENAI_API_KEY, OPENAI_ORG
-from Models import EventSubscriptionModel, TranscriptSubscriptionModel, MeetingModel, MeetingTimeModel, SubscriptionSuccessModel
-from security.Authorization import Authorization
-
-app = FastAPI()
-logging.basicConfig(level=logging.INFO)
-
-@app.on_event("startup")
-def startup_mongo_client():
-    # mongodb connection config
-    app.mongodb_client = MongoClient(MONGO_DB_URL, server_api = ServerApi('1'))
-    app.mongodb_client.admin.command("ping")
-    logging.info("connected to mongoDB!!!")
-    app.db = app.mongodb_client[DB_NAME]
-    # OpenAI config
-    openai.organization = OPENAI_ORG
-    openai.api_key = OPENAI_API_KEY
-
-@app.on_event("shutdown")
-def shutdown_db_client():
-    app.mongodb_client.close()
-
-
-GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
-GRAPH_BETA_BASE_URL = "https://graph.microsoft.com/beta"
+from Minutes import db, config
+from Minutes.Authorization import Authorization
+from Minutes.Models import (
+    EventSubscriptionModel,
+    TranscriptSubscriptionModel,
+    MeetingModel,
+    MeetingTimeModel,
+    SubscriptionSuccessModel
+)
 
 
 def save_event_subscription_to_db(subscription: SubscriptionSuccessModel):
-    update_result = app.db["subscriptions"].insert_one(jsonable_encoder(subscription))
+    update_result = db["subscriptions"].insert_one(jsonable_encoder(subscription))
     if update_result.acknowledged:
         logging.info("Event subscription saved to database")
     else:
@@ -46,7 +26,7 @@ def save_event_subscription_to_db(subscription: SubscriptionSuccessModel):
 
 
 def save_transcription_subscription_to_db(meeting_id: str, subscription: SubscriptionSuccessModel):
-    update_result = app.db["meetings"].update_one(
+    update_result = db["meetings"].update_one(
         {"meetingId": meeting_id},
         {"$set": {"transcriptSubscription": jsonable_encoder(subscription)}}
     )
@@ -57,19 +37,20 @@ def save_transcription_subscription_to_db(meeting_id: str, subscription: Subscri
 
 
 def create_new_event_subscription():
-    subscription_url = f"{GRAPH_BASE_URL}/subscriptions"
+    subscription_url = f"{config.get('GRAPH_BASE_URL')}/subscriptions"
     subscription_model = EventSubscriptionModel()
 
     # Calculate dynamic expiration date
     today = datetime.datetime.now().date()
 
-    expiration_date = today + datetime.timedelta(days=1)
+    expiration_date = today + datetime.timedelta(days=config['MAX_EVENT_SUB_PERIOD'])
     expiration_date_iso = expiration_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     subscription_model.expirationDateTime = expiration_date_iso
 
     logging.info("Creating New Event Subscription")
     # print(subscription_model.model_dump())
-    response = requests.post(subscription_url, json=subscription_model.model_dump(), headers=Authorization.getHeaders())
+    response = requests.post(subscription_url, json=subscription_model.dict(), headers=Authorization.getHeaders(),
+                             timeout=10)
 
     if response.status_code == 201:
         subscription_info = response.json()
@@ -81,13 +62,13 @@ def create_new_event_subscription():
 
 def create_new_transcript_subscription(meeting_id: str):
     logging.info(f"Now creating new transcript subscription for meeting {meeting_id[:4]}...{meeting_id[-4:]}")
-    subscription_url = f"{GRAPH_BETA_BASE_URL}/subscriptions"
+    subscription_url = f"{config.get('GRAPH_BETA_BASE_URL')}/subscriptions"
     subscription_model = TranscriptSubscriptionModel()
 
     # Calculate dynamic expiration date
     today = datetime.datetime.now(datetime.timezone.utc)
 
-    expiration_date = today + datetime.timedelta(hours=2)
+    expiration_date = today + datetime.timedelta(days=config['MAX_TRANSCRIPT_SUB_PERIOD'])
     expiration_date_iso = expiration_date.strftime("%Y-%m-%dT%H:%M:%SZ")
     subscription_model.expirationDateTime = expiration_date_iso
 
@@ -96,7 +77,8 @@ def create_new_transcript_subscription(meeting_id: str):
 
     logging.info("Creating New Transcript Subscription")
     # print(subscription_model.model_dump())
-    response = requests.post(subscription_url, json=subscription_model.model_dump(), headers=Authorization.getHeaders())
+    response = requests.post(subscription_url, json=subscription_model.dict(), headers=Authorization.getHeaders(),
+                             timeout=10)
 
     if response.status_code == 201:
         subscription_info = response.json()
@@ -108,8 +90,8 @@ def create_new_transcript_subscription(meeting_id: str):
 
 def get_meeting_id_using_event_id(event_id: str):
     meeting = MeetingModel(eventId=event_id)
-    event_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/events/{event_id}"
-    meeting_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/onlineMeetings"
+    event_url = f"{config.get('GRAPH_BASE_URL')}/users/{config.get('USER_ID')}/events/{event_id}"
+    meeting_url = f"{config.get('GRAPH_BASE_URL')}/users/{config.get('USER_ID')}/onlineMeetings"
     # print("calling",event_url)
     event_response = requests.get(event_url, headers=Authorization.getHeaders(), timeout=10)
     if event_response.status_code == 200:
@@ -128,7 +110,7 @@ def get_meeting_id_using_event_id(event_id: str):
                 meeting_json = meeting_response.json()
                 meeting.meetingId = meeting_json["value"][0]["id"]
                 # save meeting details to db
-                app.db["meetings"].insert_one(jsonable_encoder(meeting))
+                db["meetings"].insert_one(jsonable_encoder(meeting))
                 logging.info("Meeting Details extracted and stored in database")
             else:
                 logging.error(f"Error fetching event\n{meeting_response.text}")
@@ -156,14 +138,14 @@ def reply_all_summary_to_meeting_invite(meeting_id, minutes, action_points):
             }
         }
     }
-    message_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/messages"
+    message_url = f"{config.get('GRAPH_BASE_URL')}/users/{config.get('USER_ID')}/messages"
     params = {
         "$expand": f"microsoft.graph.eventMessage/event($select = id;$filter = id eq '{meeting_id}')"
     }
     response = requests.get(message_url, headers=Authorization.getHeaders(), params=params, timeout=10)
     if response.status_code == 200:
         message_id = response.json()["value"][0]["id"]
-        reply_all_url = f"{GRAPH_BASE_URL}/users/{USER_ID}/messages/{message_id}/replyAll"
+        reply_all_url = f"{config.get('GRAPH_BASE_URL')}/users/{config.get('USER_ID')}/messages/{message_id}/replyAll"
         response = requests.post(reply_all_url, headers=Authorization.getHeaders(), json=reply_data, timeout=10)
         if response.status_code == 202:
             logging.info("ReplyAll Successful: Meeting minutes and action points sent to event invite")
@@ -190,6 +172,10 @@ def summarize_transcript(transcripts_vtt: str):
     cleaned_transcript = clean_transcript_text(transcripts_vtt)
 
     logging.info("hang tight, chatGPT is here...")
+
+    # OpenAI config
+    openai.organization = config["OPENAI_ORG"]
+    openai.api_key = config["OPENAI_API_KEY"]
 
     minutes_prompt = f"""write a short summary from the following meeting transcript,
     keep the summary concise and informative ignore Introduction, Greetings and goodbyes
@@ -218,7 +204,7 @@ def summarize_transcript(transcripts_vtt: str):
 
 def get_transcripts(meeting_id, transcript_id):
     transcripts_vtt = ""
-    transcript_url = f"{GRAPH_BETA_BASE_URL}/users/{USER_ID}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
+    transcript_url = f"{config.get('GRAPH_BETA_BASE_URL')}/users/{config.get('USER_ID')}/onlineMeetings/{meeting_id}/transcripts/{transcript_id}/content"
     params = {
         "$format": "text/vtt"
     }
@@ -234,7 +220,7 @@ def get_transcripts(meeting_id, transcript_id):
 
 def handel_new_transcript_notification(notification: dict):
     transcript_resource_url = notification["value"][0]["resource"]
-    regex = "\(.*?\)"
+    regex = r"\(.*?\)"
     ids: list[str] = re.findall(regex, transcript_resource_url)
     meeting_id, transcript_id = [id.lstrip("('").rstrip("')") for id in ids]
 
@@ -256,58 +242,3 @@ def handel_new_events_notification(notification: dict):
         meeting_id = get_meeting_id_using_event_id(event["resourceData"]["id"])
         if meeting_id != "":
             create_new_transcript_subscription(meeting_id)
-
-
-@app.get("/")
-def hello():
-    return {"message": "hello world from get endpoint"}
-
-
-@app.post("/")
-def hello():
-    return {"id": "notification"}
-
-
-@app.get("/token")
-def getToken():
-    return Authorization.getHeaders()
-
-
-# helper route
-@app.post("/create-new-event-subscription")
-def event_subscription():
-    create_new_event_subscription()
-    return {"message": "done"}
-
-
-# helper route
-@app.post("/create-new-transcript-subscription/{meeting_id}")
-def transcript_subscription(meeting_id: str):
-    create_new_transcript_subscription(meeting_id)
-    return {"message": "executed"}
-
-
-@app.post("/handle/new-events", response_class=PlainTextResponse)
-def handel_new_events(validationToken: str = None, notification: dict = None, background_task: BackgroundTasks = None):
-    # Validating subscription creation
-    if validationToken:
-        logging.info("validation_token: " + validationToken)
-        return validationToken
-
-    logging.info("New event notification received...")
-    background_task.add_task(handel_new_events_notification, notification)
-    return "event received, Thank you"
-
-
-@app.post("/handle/new-transcripts", response_class=PlainTextResponse)
-def handle_new_transcripts(validationToken: str = None, notification: dict = None, background_task: BackgroundTasks = None):
-    # Validating subscription creation
-    if validationToken:
-        logging.info("validation_token: " + validationToken)
-        return validationToken
-
-    logging.info("New transcript notification received...")
-    background_task.add_task(handel_new_transcript_notification, notification)
-
-    return "event received, Thank you"
-
