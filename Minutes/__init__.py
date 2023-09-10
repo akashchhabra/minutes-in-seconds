@@ -7,11 +7,6 @@ from pymongo import MongoClient
 from pymongo.server_api import ServerApi
 
 
-config = {
-    **dotenv_values("Minutes/.env"),
-    # comment below line on local
-    **os.environ
-}
 app = FastAPI()
 
 logging.basicConfig(
@@ -22,6 +17,14 @@ logging.basicConfig(
         logging.StreamHandler()
     ]
 )
+
+# loading env variables
+config = {
+    **dotenv_values(".env"),
+    # comment below line on local
+    **os.environ
+}
+logging.info(f"config loaded successfully: {len(config)}")
 
 # mongodb connection config
 app.mongodb_client = MongoClient(config["MONGO_DB_URL"], server_api=ServerApi('1'))

@@ -36,7 +36,7 @@ def hello():
 # helper route
 @app.get("/token")
 def getToken(secret: str):
-    if secret == config["TOKEN_SECRET"]:
+    if secret == config["API_SECRET"]:
         return Authorization.getHeaders()
     else:
         return {"message": "Enter correct secret"}
@@ -45,7 +45,7 @@ def getToken(secret: str):
 # helper route
 @app.post("/create-new-event-subscription")
 def event_subscription(secret: str):
-    if secret == config["TOKEN_SECRET"]:
+    if secret == config["API_SECRET"]:
         create_new_event_subscription()
         return {"message": "done"}
     else:
@@ -55,7 +55,7 @@ def event_subscription(secret: str):
 # helper route
 @app.post("/create-new-transcript-subscription/{meeting_id}")
 def transcript_subscription(meeting_id: str, secret: str):
-    if secret == config["TOKEN_SECRET"]:
+    if secret == config["API_SECRET"]:
         create_new_transcript_subscription(meeting_id)
         return {"message": "executed"}
     else:
